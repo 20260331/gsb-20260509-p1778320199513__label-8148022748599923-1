@@ -239,6 +239,100 @@
             pointer-events: none;
             opacity: 0;
         }
+
+        .history-controls {
+            display: flex;
+            gap: 6px;
+            margin-top: 12px;
+            align-items: center;
+        }
+
+        .history-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg-app);
+            color: var(--text-main);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            font-size: 14px;
+        }
+
+        .history-btn:hover:not(:disabled) {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+
+        .history-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        .history-separator {
+            flex: 1;
+            border-bottom: 1px dashed var(--border);
+            margin: 0 4px;
+        }
+
+        .history-panel {
+            display: none;
+            margin-top: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: var(--bg-app);
+        }
+
+        .history-panel.visible {
+            display: block;
+        }
+
+        .history-panel-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-size: 13px;
+        }
+
+        .history-panel-item:hover {
+            background: var(--surface);
+        }
+
+        .history-panel-item.current {
+            background: var(--surface);
+            font-weight: 600;
+        }
+
+        .history-panel-item .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--border);
+            flex-shrink: 0;
+        }
+
+        .history-panel-item.current .dot {
+            background: var(--accent);
+        }
+
+        .history-panel-item .label {
+            flex: 1;
+            color: var(--text-main);
+        }
+
+        .history-panel-item .time {
+            font-size: 11px;
+            color: var(--text-sub);
+        }
     </style>
 </head>
 <body data-theme="macaron">
@@ -285,7 +379,236 @@
  */
 const Store = {
     items: [],
+    annotators: {},
+    fileHashes: {},
+    fileNames: {},
+    hashItemMap: {},
     theme: 'macaron'
+};
+
+const HistoryManager = {
+    MAX_ENTRIES: 10,
+    STORAGE_KEY: 'wm_tool_history',
+    IMAGE_KEY: 'wm_tool_images',
+    _stacks: {},
+
+    init(itemId, initialState) {
+        this._stacks[itemId] = {
+            entries: [{ ...initialState, timestamp: Date.now() }],
+            cursor: 0
+        };
+    },
+
+    push(itemId, state) {
+        const stack = this._stacks[itemId];
+        if (!stack) return;
+        stack.entries = stack.entries.slice(0, stack.cursor + 1);
+        stack.entries.push({ ...state, timestamp: Date.now() });
+        if (stack.entries.length > this.MAX_ENTRIES) {
+            stack.entries.shift();
+        }
+        stack.cursor = stack.entries.length - 1;
+    },
+
+    canUndo(itemId) {
+        const stack = this._stacks[itemId];
+        return stack && stack.cursor > 0;
+    },
+
+    canRedo(itemId) {
+        const stack = this._stacks[itemId];
+        return stack && stack.cursor < stack.entries.length - 1;
+    },
+
+    undo(itemId) {
+        const stack = this._stacks[itemId];
+        if (!stack || !this.canUndo(itemId)) return null;
+        stack.cursor--;
+        return { ...stack.entries[stack.cursor] };
+    },
+
+    redo(itemId) {
+        const stack = this._stacks[itemId];
+        if (!stack || !this.canRedo(itemId)) return null;
+        stack.cursor++;
+        return { ...stack.entries[stack.cursor] };
+    },
+
+    jumpTo(itemId, index) {
+        const stack = this._stacks[itemId];
+        if (!stack || index < 0 || index >= stack.entries.length) return null;
+        stack.cursor = index;
+        return { ...stack.entries[stack.cursor] };
+    },
+
+    getEntries(itemId) {
+        const stack = this._stacks[itemId];
+        if (!stack) return [];
+        return stack.entries.map((e, i) => ({
+            index: i,
+            label: e.label,
+            timestamp: e.timestamp,
+            isCurrent: i === stack.cursor
+        }));
+    },
+
+    getCursor(itemId) {
+        const stack = this._stacks[itemId];
+        return stack ? stack.cursor : -1;
+    },
+
+    getCurrentState(itemId) {
+        const stack = this._stacks[itemId];
+        if (!stack) return null;
+        return { ...stack.entries[stack.cursor] };
+    },
+
+    bitmapToDataUrl(bitmap, quality) {
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        canvas.getContext('2d').drawImage(bitmap, 0, 0);
+        return canvas.toDataURL('image/jpeg', quality || 0.6);
+    },
+
+    async dataUrlToBitmap(dataUrl) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => createImageBitmap(img).then(resolve).catch(reject);
+            img.onerror = reject;
+            img.src = dataUrl;
+        });
+    },
+
+    save(fileHash, fileName) {
+        try {
+            const allData = this._loadAll();
+            const itemId = Store.hashItemMap[fileHash];
+            const serializable = {};
+            if (itemId && this._stacks[itemId]) {
+                serializable[itemId] = {
+                    entries: this._stacks[itemId].entries,
+                    cursor: this._stacks[itemId].cursor
+                };
+            }
+            allData[fileHash] = { stacks: serializable, fileName: fileName || '' };
+            localStorage.setItem(this.STORAGE_KEY, JSON.stringify(allData));
+        } catch (e) {
+            console.warn('历史记录保存失败:', e);
+        }
+    },
+
+    saveImageData(fileHash, originalBitmap, processedBitmap) {
+        try {
+            const allImages = this._loadAllImages();
+            const entry = allImages[fileHash] || {};
+            if (originalBitmap) {
+                entry.original = this.bitmapToDataUrl(originalBitmap);
+            }
+            if (processedBitmap) {
+                entry.processed = this.bitmapToDataUrl(processedBitmap);
+            }
+            allImages[fileHash] = entry;
+            localStorage.setItem(this.IMAGE_KEY, JSON.stringify(allImages));
+        } catch (e) {
+            console.warn('图片数据保存失败:', e);
+        }
+    },
+
+    getStoredImageData(fileHash) {
+        try {
+            const allImages = this._loadAllImages();
+            return allImages[fileHash] || null;
+        } catch (e) {
+            return null;
+        }
+    },
+
+    removeImageData(fileHash) {
+        try {
+            const allImages = this._loadAllImages();
+            delete allImages[fileHash];
+            localStorage.setItem(this.IMAGE_KEY, JSON.stringify(allImages));
+        } catch (e) {}
+    },
+
+    load(fileHash) {
+        try {
+            const allData = this._loadAll();
+            const data = allData[fileHash];
+            if (!data) return false;
+            const stacks = data.stacks || data;
+            for (const itemId in stacks) {
+                this._stacks[itemId] = stacks[itemId];
+            }
+            return true;
+        } catch (e) {
+            console.warn('历史记录加载失败:', e);
+            return false;
+        }
+    },
+
+    loadOnly(fileHash) {
+        try {
+            const allData = this._loadAll();
+            const data = allData[fileHash];
+            if (!data) return null;
+            const stacks = data.stacks || data;
+            const result = {};
+            for (const itemId in stacks) {
+                result[itemId] = stacks[itemId];
+            }
+            return result;
+        } catch (e) {
+            return null;
+        }
+    },
+
+    getStoredFileName(fileHash) {
+        try {
+            const allData = this._loadAll();
+            const data = allData[fileHash];
+            return data && data.fileName ? data.fileName : '';
+        } catch (e) {
+            return '';
+        }
+    },
+
+    getAllStoredHashes() {
+        try {
+            const allData = this._loadAll();
+            return Object.keys(allData);
+        } catch (e) {
+            return [];
+        }
+    },
+
+    hasStoredHistory(fileHash) {
+        try {
+            const allData = this._loadAll();
+            return !!allData[fileHash];
+        } catch (e) {
+            return false;
+        }
+    },
+
+    _loadAll() {
+        try {
+            const raw = localStorage.getItem(this.STORAGE_KEY);
+            return raw ? JSON.parse(raw) : {};
+        } catch (e) {
+            return {};
+        }
+    },
+
+    _loadAllImages() {
+        try {
+            const raw = localStorage.getItem(this.IMAGE_KEY);
+            return raw ? JSON.parse(raw) : {};
+        } catch (e) {
+            return {};
+        }
+    }
 };
 
 const RepairEngine = {
@@ -378,13 +701,59 @@ class WatermarkAnnotator {
 };
 
 const Core = {
+    async computeHash(file) {
+        const buffer = await file.arrayBuffer();
+        const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    },
+
     async handleUpload(files) {
         for (const file of files) {
-            const id = 'img_' + Math.random().toString(36).slice(2, 9);
+            const fileHash = await this.computeHash(file);
             const bitmap = await createImageBitmap(file);
+            const hasHistory = HistoryManager.hasStoredHistory(fileHash);
+
+            if (hasHistory) {
+                const loaded = HistoryManager.loadOnly(fileHash);
+                if (loaded) {
+                    const itemId = Object.keys(loaded)[0];
+                    if (itemId) {
+                        for (const id in loaded) {
+                            HistoryManager._stacks[id] = loaded[id];
+                        }
+                        const item = { id: itemId, file, original: bitmap, processed: null, rect: null, status: 'pending' };
+                        Store.items.push(item);
+                        Store.fileHashes[itemId] = fileHash;
+                        Store.fileNames[itemId] = file.name;
+                        Store.hashItemMap[fileHash] = itemId;
+                        UI.renderCard(item);
+                        const currentState = HistoryManager.getCurrentState(itemId);
+                        if (currentState) {
+                            item.status = currentState.status;
+                            item.rect = currentState.rect ? { ...currentState.rect } : null;
+                            if (currentState.status === 'done' && currentState.rect) {
+                                item.processed = await RepairEngine.repair(item.original, item.rect);
+                            }
+                            UI.restoreState(item, currentState);
+                            UI.updateHistoryControls(itemId);
+                        }
+                        HistoryManager.saveImageData(fileHash, bitmap, item.processed);
+                        continue;
+                    }
+                }
+            }
+
+            const id = 'img_' + Math.random().toString(36).slice(2, 9);
             const item = { id, file, original: bitmap, processed: null, rect: null, status: 'pending' };
             Store.items.push(item);
+            Store.fileHashes[id] = fileHash;
+            Store.fileNames[id] = file.name;
+            Store.hashItemMap[fileHash] = id;
+            HistoryManager.init(id, { label: '原始图片', status: 'pending', rect: null });
             UI.renderCard(item);
+            HistoryManager.save(fileHash, file.name);
+            HistoryManager.saveImageData(fileHash, bitmap, null);
         }
     },
 
@@ -396,11 +765,67 @@ const Core = {
             const item = queue[i];
             item.processed = await RepairEngine.repair(item.original, item.rect);
             item.status = 'done';
+            HistoryManager.push(item.id, { label: '去水印处理', status: 'done', rect: { ...item.rect } });
+            HistoryManager.save(Store.fileHashes[item.id], Store.fileNames[item.id]);
+            HistoryManager.saveImageData(Store.fileHashes[item.id], item.original, item.processed);
             UI.updateCard(item);
             UI.progress(((i+1)/queue.length) * 100);
         }
         UI.progress(100, false);
         UI.toast("处理完成");
+    },
+
+    undo(itemId) {
+        const state = HistoryManager.undo(itemId);
+        if (!state) return;
+        this._applyHistoryState(itemId, state);
+    },
+
+    redo(itemId) {
+        const state = HistoryManager.redo(itemId);
+        if (!state) return;
+        this._applyHistoryState(itemId, state);
+    },
+
+    jumpToHistory(itemId, index) {
+        const state = HistoryManager.jumpTo(itemId, index);
+        if (!state) return;
+        this._applyHistoryState(itemId, state);
+    },
+
+    _applyHistoryState(itemId, state) {
+        const item = Store.items.find(i => i.id === itemId);
+        if (!item) return;
+        item.status = state.status;
+        item.rect = state.rect ? { ...state.rect } : null;
+        if (state.status !== 'done') {
+            item.processed = null;
+        }
+        if (state.status === 'done' && !item.processed) {
+            const fileHash = Store.fileHashes[itemId];
+            const imageData = HistoryManager.getStoredImageData(fileHash);
+            if (imageData && imageData.processed) {
+                HistoryManager.dataUrlToBitmap(imageData.processed).then(bitmap => {
+                    item.processed = bitmap;
+                    UI.restoreState(item, state);
+                    HistoryManager.save(Store.fileHashes[itemId], Store.fileNames[itemId]);
+                });
+            } else if (item.rect && item.original) {
+                RepairEngine.repair(item.original, item.rect).then(bitmap => {
+                    item.processed = bitmap;
+                    UI.restoreState(item, state);
+                    HistoryManager.saveImageData(fileHash, item.original, bitmap);
+                    HistoryManager.save(Store.fileHashes[itemId], Store.fileNames[itemId]);
+                });
+            } else {
+                UI.restoreState(item, state);
+                HistoryManager.save(Store.fileHashes[itemId], Store.fileNames[itemId]);
+            }
+        } else {
+            UI.restoreState(item, state);
+            HistoryManager.save(Store.fileHashes[itemId], Store.fileNames[itemId]);
+        }
+        UI.updateHistoryControls(itemId);
     },
 
     async exportAll() {
@@ -413,7 +838,8 @@ const Core = {
                 const canvas = document.createElement('canvas');
                 canvas.width = item.processed.width; canvas.height = item.processed.height;
                 canvas.getContext('2d').drawImage(item.processed, 0, 0);
-                zip.file(`fixed_${item.file.name}`, canvas.toDataURL('image/jpeg', 0.9).split(',')[1], {base64: true});
+                const name = item.file ? item.file.name : (Store.fileNames[item.id] || 'image.jpg');
+                zip.file(`fixed_${name}`, canvas.toDataURL('image/jpeg', 0.9).split(',')[1], {base64: true});
             });
             const blob = await zip.generateAsync({type: "blob"});
             UI.download(blob, "images.zip");
@@ -465,17 +891,31 @@ const UI = {
             <div class="canvas-container"><canvas id="canvas-${item.id}"></canvas></div>
             <div class="card-body">
                 <span class="status-badge" id="badge-${item.id}">待标注</span>
-                <p style="font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.file.name}</p>
+                <p style="font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.file ? item.file.name : (Store.fileNames[item.id] || '已恢复图片')}</p>
+                <div class="history-controls">
+                    <button class="history-btn" id="undo-${item.id}" disabled title="撤销">&#8592;</button>
+                    <button class="history-btn" id="redo-${item.id}" disabled title="重做">&#8594;</button>
+                    <div class="history-separator"></div>
+                    <button class="history-btn" id="histToggle-${item.id}" title="历史记录">&#9776;</button>
+                </div>
+                <div class="history-panel" id="histPanel-${item.id}"></div>
             </div>
         `;
         gallery.prepend(card);
         const canvas = document.getElementById(`canvas-${item.id}`);
         canvas.width = item.original.width; canvas.height = item.original.height;
-        new WatermarkAnnotator(canvas, item.original, (rect) => {
+        const annotator = new WatermarkAnnotator(canvas, item.original, (rect) => {
             item.rect = rect;
             item.status = 'annotated';
+            HistoryManager.push(item.id, { label: '标注水印区域', status: 'annotated', rect: { ...rect } });
+            HistoryManager.save(Store.fileHashes[item.id], Store.fileNames[item.id]);
             this.updateCard(item);
         });
+        Store.annotators[item.id] = annotator;
+        document.getElementById(`undo-${item.id}`).addEventListener('click', () => Core.undo(item.id));
+        document.getElementById(`redo-${item.id}`).addEventListener('click', () => Core.redo(item.id));
+        document.getElementById(`histToggle-${item.id}`).addEventListener('click', () => this.toggleHistory(item.id));
+        this.renderHistoryList(item.id);
     },
 
     updateCard(item) {
@@ -489,6 +929,7 @@ const UI = {
             const ctx = document.getElementById(`canvas-${item.id}`).getContext('2d');
             ctx.drawImage(item.processed, 0, 0);
         }
+        this.updateHistoryControls(item.id);
     },
 
     toast(msg) {
@@ -513,6 +954,167 @@ const UI = {
         a.href = URL.createObjectURL(blob);
         a.download = name;
         a.click();
+    },
+
+    toggleHistory(itemId) {
+        const panel = document.getElementById(`histPanel-${itemId}`);
+        if (!panel) return;
+        panel.classList.toggle('visible');
+        if (panel.classList.contains('visible')) {
+            this.renderHistoryList(itemId);
+        }
+    },
+
+    renderHistoryList(itemId) {
+        const panel = document.getElementById(`histPanel-${itemId}`);
+        if (!panel) return;
+        const entries = HistoryManager.getEntries(itemId);
+        if (entries.length === 0) {
+            panel.innerHTML = '<div style="padding:12px;color:var(--text-sub);font-size:13px;">暂无历史记录</div>';
+            return;
+        }
+        panel.innerHTML = entries.map(e => {
+            const time = new Date(e.timestamp);
+            const timeStr = time.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            return `<div class="history-panel-item${e.isCurrent ? ' current' : ''}" data-index="${e.index}" data-item-id="${itemId}">
+                <span class="dot"></span>
+                <span class="label">${e.label}</span>
+                <span class="time">${timeStr}</span>
+            </div>`;
+        }).join('');
+        panel.querySelectorAll('.history-panel-item').forEach(el => {
+            el.addEventListener('click', () => {
+                const idx = parseInt(el.dataset.index, 10);
+                const id = el.dataset.itemId;
+                Core.jumpToHistory(id, idx);
+                this.renderHistoryList(id);
+            });
+        });
+    },
+
+    updateHistoryControls(itemId) {
+        const undoBtn = document.getElementById(`undo-${itemId}`);
+        const redoBtn = document.getElementById(`redo-${itemId}`);
+        if (undoBtn) undoBtn.disabled = !HistoryManager.canUndo(itemId);
+        if (redoBtn) redoBtn.disabled = !HistoryManager.canRedo(itemId);
+        const panel = document.getElementById(`histPanel-${itemId}`);
+        if (panel && panel.classList.contains('visible')) {
+            this.renderHistoryList(itemId);
+        }
+    },
+
+    restoreState(item, state) {
+        const badge = document.getElementById(`badge-${item.id}`);
+        const annotator = Store.annotators[item.id];
+        if (state.status === 'pending') {
+            badge.innerText = "待标注";
+            badge.className = "status-badge";
+            if (annotator) {
+                annotator.rect = null;
+                annotator.render();
+            }
+        } else if (state.status === 'annotated') {
+            badge.innerText = "已标注";
+            badge.className = "status-badge status-annotated";
+            if (annotator) {
+                annotator.rect = state.rect;
+                annotator.render();
+            }
+        } else if (state.status === 'done') {
+            badge.innerText = "完成";
+            badge.className = "status-badge status-done";
+            const ctx = document.getElementById(`canvas-${item.id}`).getContext('2d');
+            if (item.processed) {
+                ctx.drawImage(item.processed, 0, 0);
+            }
+        }
+    },
+
+    renderRestoredCard(item) {
+        const gallery = document.getElementById('gallery');
+        const displayName = Store.fileNames[item.id] || '已恢复图片';
+        const card = document.createElement('div');
+        card.className = 'image-card';
+        card.innerHTML = `
+            <div class="canvas-container"><canvas id="canvas-${item.id}"></canvas></div>
+            <div class="card-body">
+                <span class="status-badge" id="badge-${item.id}">待标注</span>
+                <p style="font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${displayName}</p>
+                <div class="history-controls">
+                    <button class="history-btn" id="undo-${item.id}" disabled title="撤销">&#8592;</button>
+                    <button class="history-btn" id="redo-${item.id}" disabled title="重做">&#8594;</button>
+                    <div class="history-separator"></div>
+                    <button class="history-btn" id="histToggle-${item.id}" title="历史记录">&#9776;</button>
+                </div>
+                <div class="history-panel" id="histPanel-${item.id}"></div>
+            </div>
+        `;
+        gallery.prepend(card);
+        const canvas = document.getElementById(`canvas-${item.id}`);
+        canvas.width = item.original.width;
+        canvas.height = item.original.height;
+        const annotator = new WatermarkAnnotator(canvas, item.original, (rect) => {
+            item.rect = rect;
+            item.status = 'annotated';
+            HistoryManager.push(item.id, { label: '标注水印区域', status: 'annotated', rect: { ...rect } });
+            HistoryManager.save(Store.fileHashes[item.id], Store.fileNames[item.id]);
+            this.updateCard(item);
+        });
+        Store.annotators[item.id] = annotator;
+        document.getElementById(`undo-${item.id}`).addEventListener('click', () => Core.undo(item.id));
+        document.getElementById(`redo-${item.id}`).addEventListener('click', () => Core.redo(item.id));
+        document.getElementById(`histToggle-${item.id}`).addEventListener('click', () => this.toggleHistory(item.id));
+        this.renderHistoryList(item.id);
+    },
+
+    async initRecovery() {
+        const hashes = HistoryManager.getAllStoredHashes();
+        if (hashes.length === 0) return;
+        for (const hash of hashes) {
+            const imageData = HistoryManager.getStoredImageData(hash);
+            const loaded = HistoryManager.loadOnly(hash);
+            if (!loaded || !imageData || !imageData.original) continue;
+
+            const itemId = Object.keys(loaded)[0];
+            if (!itemId) continue;
+
+            for (const id in loaded) {
+                HistoryManager._stacks[id] = loaded[id];
+            }
+
+            try {
+                const originalBitmap = await HistoryManager.dataUrlToBitmap(imageData.original);
+                let processedBitmap = null;
+                if (imageData.processed) {
+                    processedBitmap = await HistoryManager.dataUrlToBitmap(imageData.processed);
+                }
+
+                const fileName = HistoryManager.getStoredFileName(hash);
+                const currentState = HistoryManager.getCurrentState(itemId);
+                const item = {
+                    id: itemId,
+                    file: null,
+                    original: originalBitmap,
+                    processed: processedBitmap,
+                    rect: currentState ? currentState.rect : null,
+                    status: currentState ? currentState.status : 'pending'
+                };
+
+                Store.items.push(item);
+                Store.fileHashes[itemId] = hash;
+                Store.fileNames[itemId] = fileName;
+                Store.hashItemMap[hash] = itemId;
+
+                this.renderRestoredCard(item);
+
+                if (currentState) {
+                    this.restoreState(item, currentState);
+                    this.updateHistoryControls(itemId);
+                }
+            } catch (e) {
+                console.warn('恢复图片失败:', hash, e);
+            }
+        }
     }
 };
 
@@ -523,6 +1125,20 @@ dz.ondragover = (e) => { e.preventDefault(); dz.style.borderColor = 'var(--accen
 dz.ondrop = (e) => { e.preventDefault(); Core.handleUpload(e.dataTransfer.files); };
 
 UI.initTheme();
+UI.initRecovery();
+
+document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        e.preventDefault();
+        const lastItem = Store.items[Store.items.length - 1];
+        if (lastItem && HistoryManager.canUndo(lastItem.id)) Core.undo(lastItem.id);
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+        e.preventDefault();
+        const lastItem = Store.items[Store.items.length - 1];
+        if (lastItem && HistoryManager.canRedo(lastItem.id)) Core.redo(lastItem.id);
+    }
+});
 </script>
 </body>
 </html>
