@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>批量去水印工具</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    
+    <style>
+        /* --- 核心变量系统 --- */
+        :root {
+            --bg-app: #f8fafc;
+            --header-grad: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+            --surface: #ffffff;
+            --text-main: #1e293b;
+            --text-sub: #64748b;
+            --accent: #ec4899;
+            --border: #e2e8f0;
+            --shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05);
+            --btn-text: #ffffff;
+            --canvas-bg: #f1f5f9;
+            --glass-bg: rgba(255, 255, 255, 0.7);
+        }
+
+        [data-theme="deepBlue"] {
+            --bg-app: #0f172a;
+            --header-grad: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%);
+            --surface: #1e293b;
+            --text-main: #38bdf8;
+            --text-sub: #94a3b8;
+            --accent: #38bdf8;
+            --border: #334155;
+            --shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
+            --btn-text: #ffffff;
+            --canvas-bg: #000000;
+            --glass-bg: rgba(30, 41, 59, 0.7);
+        }
+
+        /* --- 基础样式 --- */
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+
+        body {
+            background-color: var(--bg-app);
+            color: var(--text-main);
+            transition: background 0.4s ease, color 0.4s ease;
+            min-height: 100vh;
+            padding-bottom: 120px;
+        }
+
+        header {
+            background: var(--header-grad);
+            padding: 80px 20px;
+            text-align: center;
+            color: white;
+            position: relative;
+            clip-path: ellipse(150% 100% at 50% 0%);
+        }
+
+        /* --- 优化后的主题切换器 --- */
+        .theme-panel {
+            position: absolute;
+            top: 25px;
+            right: 25px;
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            border-radius: 50px;
+            border: 1px solid rgba(255,255,255,0.2);
+            box-shadow: var(--shadow);
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .theme-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 2px solid transparent;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .theme-btn svg { width: 18px; height: 18px; color: var(--text-main); }
+
+        .theme-options-wrap {
+            display: flex;
+            gap: 8px;
+            width: 0;
+            overflow: hidden;
+            opacity: 0;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            transform: translateX(10px);
+        }
+
+        .theme-panel:hover .theme-options-wrap {
+            width: 80px;
+            opacity: 1;
+            margin-left: 8px;
+            transform: translateX(0);
+        }
+
+        .color-dot {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+
+        .color-dot:hover { 
+            filter: brightness(0.85);
+        }
+
+        .color-dot.active { 
+            border: 2px solid var(--accent);
+        }
+
+        .dot-macaron { background: linear-gradient(135deg, #6366f1, #a855f7); }
+        .dot-deepblue { background: linear-gradient(135deg, #1e1b4b, #312e81); }
+
+        /* --- 容器 & 上传 --- */
+        .container { max-width: 1200px; margin: -40px auto 0; padding: 0 20px; position: relative; z-index: 10; }
+
+        #dropzone {
+            border: 2px dashed var(--border);
+            border-radius: 24px;
+            padding: 80px 40px;
+            text-align: center;
+            background: var(--surface);
+            transition: all 0.3s ease;
+            cursor: pointer;
+            box-shadow: var(--shadow);
+        }
+        #dropzone:hover { border-color: var(--accent); transform: translateY(-2px); }
+        #dropzone p { font-size: 18px; color: var(--text-sub); }
+
+        /* --- 画廊卡片 --- */
+        #gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 25px;
+            margin-top: 40px;
+        }
+
+        .image-card {
+            background: var(--surface);
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border);
+            transition: transform 0.3s ease;
+        }
+
+        .canvas-container {
+            position: relative;
+            width: 100%;
+            height: 280px;
+            background: var(--canvas-bg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        canvas { max-width: 100%; max-height: 100%; cursor: crosshair; }
+
+        .card-body { padding: 20px; }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 12px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 700;
+            margin-bottom: 10px;
+            background: var(--bg-app);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .status-annotated { color: var(--accent); background: rgba(236, 72, 153, 0.1); }
+        .status-done { color: #10b981; background: rgba(16, 185, 129, 0.1); }
+
+        /* --- 操作栏 --- */
+        .action-bar {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--surface);
+            padding: 15px 30px;
+            border-radius: 100px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.15);
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            z-index: 1000;
+            border: 1px solid var(--border);
+        }
+
+        .btn-main { 
+            background: var(--accent); 
+            color: white; 
+            border: none;
+            padding: 12px 28px;
+            border-radius: 50px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .btn-main:hover { opacity: 0.9; transform: scale(1.05); }
+        .btn-main:disabled { filter: grayscale(1); opacity: 0.5; }
+
+        .export-options { display: flex; gap: 15px; border-left: 1px solid var(--border); padding-left: 20px; }
+        .export-options label { font-size: 14px; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+
+        /* --- 动画 & 反馈 --- */
+        #progress-wrap { position: fixed; top: 0; left: 0; width: 100%; height: 4px; z-index: 2000; display: none; }
+        #progress-bar { height: 100%; background: var(--accent); width: 0%; transition: width 0.3s; }
+
+        #toast {
+            position: fixed;
+            bottom: 110px;
+            left: 50%;
+            transform: translate(-50%, 100px);
+            padding: 12px 24px;
+            background: var(--text-main);
+            color: var(--surface);
+            border-radius: 50px;
+            font-size: 14px;
+            font-weight: 500;
+            transition: transform 0.4s cubic-bezier(0.18, 0.89, 0.32, 1.28), opacity 0.4s ease;
+            z-index: 3000;
+            pointer-events: none;
+            opacity: 0;
+        }
+    </style>
+</head>
+<body data-theme="macaron">
+
+<div id="progress-wrap"><div id="progress-bar"></div></div>
+
+<header>
+    <h1>批量去水印工具</h1>
+    
+    <div class="theme-panel">
+        <div class="theme-btn" id="currentThemeIcon">
+            </div>
+        <div class="theme-options-wrap">
+            <div class="color-dot dot-macaron active" data-theme="macaron"></div>
+            <div class="color-dot dot-deepblue" data-theme="deepBlue"></div>
+        </div>
+    </div>
+</header>
+
+<div class="container">
+    <div id="dropzone" onclick="document.getElementById('fileInput').click()">
+        <p>🚀 拖拽图片到这里，或者 <strong>点击浏览文件</strong></p>
+        <p style="font-size: 14px; margin-top: 10px; opacity: 0.6;">本地异步处理 • 无需上传服务器</p>
+        <input type="file" id="fileInput" multiple accept="image/*" style="display: none">
+    </div>
+
+    <div id="gallery"></div>
+</div>
+
+<div class="action-bar">
+    <button class="btn-main" id="btnRepair" onclick="Core.processAll()">开始修复</button>
+    <div class="export-options">
+        <label><input type="checkbox" id="checkZip" checked> ZIP</label>
+        <label><input type="checkbox" id="checkPdf"> PDF</label>
+    </div>
+    <button class="btn-main" style="background: var(--text-main);" onclick="Core.exportAll()">立即导出</button>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/**
+ * --- 核心逻辑 ---
+ */
+const Store = {
+    items: [],
+    theme: 'macaron'
+};
+
+const RepairEngine = {
+    async repair(bitmap, rect) {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        ctx.drawImage(bitmap, 0, 0);
+        if (!rect) return bitmap;
+
+        const { x, y, w, h } = rect;
+        const sampleY = Math.max(0, y - 2);
+        const sampleData = ctx.getImageData(x, sampleY, w, 1).data;
+        const imageData = ctx.getImageData(x, y, w, h);
+        const data = imageData.data;
+
+        for (let i = 0; i < h; i++) {
+            for (let j = 0; j < w; j++) {
+                const idx = (i * w + j) * 4;
+                data[idx] = sampleData[j * 4];
+                data[idx+1] = sampleData[j * 4 + 1];
+                data[idx+2] = sampleData[j * 4 + 2];
+                data[idx+3] = sampleData[j * 4 + 3];
+            }
+        }
+        ctx.putImageData(imageData, x, y);
+        ctx.filter = 'blur(4px)';
+        ctx.drawImage(canvas, x, y, w, h, x, y, w, h);
+        return createImageBitmap(canvas);
+    }
+};
+
+class WatermarkAnnotator {
+    constructor(canvas, bitmap, onUpdate) {
+        this.canvas = canvas;
+        this.ctx = canvas.getContext('2d');
+        this.bitmap = bitmap;
+        this.onUpdate = onUpdate;
+        this.rect = null;
+        this.isDrawing = false;
+        this.init();
+    }
+
+    init() {
+        let startX, startY;
+        const getCoords = (e) => {
+            const bc = this.canvas.getBoundingClientRect();
+            const scaleX = this.canvas.width / bc.width;
+            const scaleY = this.canvas.height / bc.height;
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return [ (clientX - bc.left) * scaleX, (clientY - bc.top) * scaleY ];
+        };
+
+        const start = (e) => {
+            this.isDrawing = true;
+            [startX, startY] = getCoords(e);
+        };
+        const move = (e) => {
+            if (!this.isDrawing) return;
+            const [curX, curY] = getCoords(e);
+            this.rect = { x: Math.min(startX, curX), y: Math.min(startY, curY), w: Math.abs(curX - startX), h: Math.abs(curY - startY) };
+            this.render();
+        };
+        const end = () => {
+            if (this.isDrawing) {
+                this.isDrawing = false;
+                this.onUpdate(this.rect);
+            }
+        };
+
+        this.canvas.onmousedown = start;
+        window.addEventListener('mousemove', move);
+        window.addEventListener('mouseup', end);
+        this.render();
+    }
+
+    render() {
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        this.ctx.drawImage(this.bitmap, 0, 0);
+        if (this.rect) {
+            this.ctx.strokeStyle = '#ec4899';
+            this.ctx.lineWidth = 4;
+            this.ctx.strokeRect(this.rect.x, this.rect.y, this.rect.w, this.rect.h);
+            this.ctx.fillStyle = 'rgba(236, 72, 153, 0.2)';
+            this.ctx.fillRect(this.rect.x, this.rect.y, this.rect.w, this.rect.h);
+        }
+    }
+};
+
+const Core = {
+    async handleUpload(files) {
+        for (const file of files) {
+            const id = 'img_' + Math.random().toString(36).slice(2, 9);
+            const bitmap = await createImageBitmap(file);
+            const item = { id, file, original: bitmap, processed: null, rect: null, status: 'pending' };
+            Store.items.push(item);
+            UI.renderCard(item);
+        }
+    },
+
+    async processAll() {
+        const queue = Store.items.filter(i => i.status === 'annotated');
+        if (queue.length === 0) return UI.toast("请先框选水印区域");
+        UI.progress(0, true);
+        for (let i = 0; i < queue.length; i++) {
+            const item = queue[i];
+            item.processed = await RepairEngine.repair(item.original, item.rect);
+            item.status = 'done';
+            UI.updateCard(item);
+            UI.progress(((i+1)/queue.length) * 100);
+        }
+        UI.progress(100, false);
+        UI.toast("处理完成");
+    },
+
+    async exportAll() {
+        const done = Store.items.filter(i => i.status === 'done');
+        if (done.length === 0) return UI.toast("没有可导出的图片");
+        
+        if (document.getElementById('checkZip').checked) {
+            const zip = new JSZip();
+            done.forEach(item => {
+                const canvas = document.createElement('canvas');
+                canvas.width = item.processed.width; canvas.height = item.processed.height;
+                canvas.getContext('2d').drawImage(item.processed, 0, 0);
+                zip.file(`fixed_${item.file.name}`, canvas.toDataURL('image/jpeg', 0.9).split(',')[1], {base64: true});
+            });
+            const blob = await zip.generateAsync({type: "blob"});
+            UI.download(blob, "images.zip");
+        }
+        if (document.getElementById('checkPdf').checked) {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+            done.forEach((item, i) => {
+                const canvas = document.createElement('canvas');
+                canvas.width = item.processed.width; canvas.height = item.processed.height;
+                canvas.getContext('2d').drawImage(item.processed, 0, 0);
+                if (i > 0) doc.addPage();
+                doc.addImage(canvas.toDataURL('image/jpeg'), 'JPEG', 10, 10, 190, 110);
+            });
+            doc.save("report.pdf");
+        }
+    }
+};
+
+const UI = {
+    icons: {
+        macaron: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>`,
+        deepBlue: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`
+    },
+
+    initTheme() {
+        this.updateThemeUI('macaron');
+        document.querySelectorAll('.color-dot').forEach(dot => {
+            dot.addEventListener('click', (e) => {
+                const theme = e.target.dataset.theme;
+                this.updateThemeUI(theme);
+            });
+        });
+    },
+
+    updateThemeUI(theme) {
+        document.body.setAttribute('data-theme', theme);
+        document.getElementById('currentThemeIcon').innerHTML = this.icons[theme];
+        document.querySelectorAll('.color-dot').forEach(d => {
+            d.classList.toggle('active', d.dataset.theme === theme);
+        });
+    },
+
+    renderCard(item) {
+        const gallery = document.getElementById('gallery');
+        const card = document.createElement('div');
+        card.className = 'image-card';
+        card.innerHTML = `
+            <div class="canvas-container"><canvas id="canvas-${item.id}"></canvas></div>
+            <div class="card-body">
+                <span class="status-badge" id="badge-${item.id}">待标注</span>
+                <p style="font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.file.name}</p>
+            </div>
+        `;
+        gallery.prepend(card);
+        const canvas = document.getElementById(`canvas-${item.id}`);
+        canvas.width = item.original.width; canvas.height = item.original.height;
+        new WatermarkAnnotator(canvas, item.original, (rect) => {
+            item.rect = rect;
+            item.status = 'annotated';
+            this.updateCard(item);
+        });
+    },
+
+    updateCard(item) {
+        const badge = document.getElementById(`badge-${item.id}`);
+        if (item.status === 'annotated') {
+            badge.innerText = "已标注";
+            badge.className = "status-badge status-annotated";
+        } else if (item.status === 'done') {
+            badge.innerText = "完成";
+            badge.className = "status-badge status-done";
+            const ctx = document.getElementById(`canvas-${item.id}`).getContext('2d');
+            ctx.drawImage(item.processed, 0, 0);
+        }
+    },
+
+    toast(msg) {
+        const t = document.getElementById('toast');
+        t.innerText = msg;
+        t.style.transform = 'translate(-50%, 0)';
+        t.style.opacity = '1';
+        setTimeout(() => {
+            t.style.transform = 'translate(-50%, 100px)';
+            t.style.opacity = '0';
+        }, 2500);
+    },
+
+    progress(val, show) {
+        const wrap = document.getElementById('progress-wrap');
+        wrap.style.display = show ? 'block' : 'none';
+        document.getElementById('progress-bar').style.width = val + '%';
+    },
+
+    download(blob, name) {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = name;
+        a.click();
+    }
+};
+
+// 事件绑定
+document.getElementById('fileInput').onchange = (e) => Core.handleUpload(e.target.files);
+const dz = document.getElementById('dropzone');
+dz.ondragover = (e) => { e.preventDefault(); dz.style.borderColor = 'var(--accent)'; };
+dz.ondrop = (e) => { e.preventDefault(); Core.handleUpload(e.dataTransfer.files); };
+
+UI.initTheme();
+</script>
+</body>
+</html>
