@@ -187,6 +187,117 @@
         .status-done { color: #10b981; background: rgba(16, 185, 129, 0.1); }
 
         /* --- 操作栏 --- */
+        .history-panel {
+            position: fixed;
+            bottom: 110px;
+            right: 30px;
+            width: 320px;
+            background: var(--surface);
+            border-radius: 16px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.15);
+            border: 1px solid var(--border);
+            z-index: 999;
+            overflow: hidden;
+            display: none;
+        }
+        .history-panel.show { display: block; }
+        .history-header {
+            padding: 12px 16px;
+            background: var(--header-grad);
+            color: white;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .history-header h4 { font-size: 14px; font-weight: 600; }
+        .history-actions { display: flex; gap: 8px; }
+        .history-btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            border: none;
+            background: rgba(255,255,255,0.2);
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        .history-btn:hover { background: rgba(255,255,255,0.35); }
+        .history-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .history-list {
+            max-height: 280px;
+            overflow-y: auto;
+            padding: 8px;
+        }
+        .history-item {
+            display: flex;
+            gap: 12px;
+            padding: 10px;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 4px;
+        }
+        .history-item:hover { background: var(--bg-app); }
+        .history-item.active { background: rgba(236, 72, 153, 0.1); border: 1px solid var(--accent); }
+        .history-thumb {
+            width: 60px;
+            height: 60px;
+            border-radius: 8px;
+            background: var(--canvas-bg);
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+        .history-thumb img { width: 100%; height: 100%; object-fit: cover; }
+        .history-info { flex: 1; min-width: 0; }
+        .history-info .name {
+            font-size: 13px;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 4px;
+        }
+        .history-info .time {
+            font-size: 11px;
+            color: var(--text-sub);
+        }
+        .history-toggle {
+            position: fixed;
+            bottom: 120px;
+            right: 30px;
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: var(--accent);
+            color: white;
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 10px 30px rgba(236, 72, 153, 0.4);
+            z-index: 998;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+        }
+        .history-toggle:hover { transform: scale(1.1); }
+        .history-badge {
+            position: absolute;
+            top: -4px;
+            right: -4px;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #ef4444;
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+        }
+
         .action-bar {
             position: fixed;
             bottom: 30px;
@@ -279,7 +390,235 @@
 
 <div id="toast"></div>
 
+<button class="history-toggle" id="historyToggle" onclick="UI.toggleHistory()">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M1 4v6h6M23 20v-6h-6"/>
+        <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/>
+    </svg>
+    <span class="history-badge" id="historyBadge" style="display:none">0</span>
+</button>
+
+<div class="history-panel" id="historyPanel">
+    <div class="history-header">
+        <h4>📜 历史记录</h4>
+        <div class="history-actions">
+            <button class="history-btn" id="undoBtn" onclick="HistoryManager.undo()" title="撤销 (Ctrl+Z)">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 7v6h6"/>
+                    <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>
+                </svg>
+            </button>
+            <button class="history-btn" id="redoBtn" onclick="HistoryManager.redo()" title="重做 (Ctrl+Y)">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 7v6h-6"/>
+                    <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"/>
+                </svg>
+            </button>
+        </div>
+    </div>
+    <div class="history-list" id="historyList"></div>
+</div>
+
 <script>
+/**
+ * --- 历史记录管理器 ---
+ */
+const HistoryManager = {
+    MAX_HISTORY: 10,
+    STORAGE_KEY: 'watermark_history',
+    history: [],
+    currentIndex: -1,
+
+    init() {
+        this.loadFromStorage();
+        this.updateUI();
+    },
+
+    saveState(items, description = '处理') {
+        const state = {
+            id: 'hist_' + Date.now(),
+            timestamp: Date.now(),
+            description: description,
+            items: this.serializeItems(items)
+        };
+
+        if (this.currentIndex < this.history.length - 1) {
+            this.history = this.history.slice(0, this.currentIndex + 1);
+        }
+
+        this.history.push(state);
+
+        if (this.history.length > this.MAX_HISTORY) {
+            this.history.shift();
+        } else {
+            this.currentIndex++;
+        }
+
+        this.saveToStorage();
+        this.updateUI();
+    },
+
+    serializeItems(items) {
+        return items.map(item => ({
+            id: item.id,
+            fileName: item.file.name,
+            rect: item.rect,
+            status: item.status,
+            originalDataUrl: this.bitmapToDataUrl(item.original),
+            processedDataUrl: item.processed ? this.bitmapToDataUrl(item.processed) : null
+        }));
+    },
+
+    bitmapToDataUrl(bitmap) {
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        canvas.getContext('2d').drawImage(bitmap, 0, 0);
+        return canvas.toDataURL('image/jpeg', 0.8);
+    },
+
+    async restoreState(index) {
+        if (index < 0 || index >= this.history.length) return null;
+        
+        const state = this.history[index];
+        const restoredItems = [];
+
+        for (const histItem of state.items) {
+            const original = await this.dataUrlToBitmap(histItem.originalDataUrl);
+            const processed = histItem.processedDataUrl ? await this.dataUrlToBitmap(histItem.processedDataUrl) : null;
+            
+            restoredItems.push({
+                id: histItem.id,
+                file: new File([], histItem.fileName, { type: 'image/jpeg' }),
+                original,
+                processed,
+                rect: histItem.rect,
+                status: histItem.status
+            });
+        }
+
+        this.currentIndex = index;
+        this.updateUI();
+        return restoredItems;
+    },
+
+    async dataUrlToBitmap(dataUrl) {
+        const img = new Image();
+        img.src = dataUrl;
+        await new Promise(r => img.onload = r);
+        return createImageBitmap(img);
+    },
+
+    undo() {
+        if (this.canUndo()) {
+            this.restoreAndNotify(this.currentIndex - 1);
+        }
+    },
+
+    redo() {
+        if (this.canRedo()) {
+            this.restoreAndNotify(this.currentIndex + 1);
+        }
+    },
+
+    async restoreAndNotify(index) {
+        const items = await this.restoreState(index);
+        if (items) {
+            Store.items = items;
+            UI.reRenderAll();
+            UI.toast(`已恢复: ${this.history[index].description}`);
+        }
+    },
+
+    canUndo() {
+        return this.currentIndex > 0;
+    },
+
+    canRedo() {
+        return this.currentIndex < this.history.length - 1;
+    },
+
+    saveToStorage() {
+        try {
+            localStorage.setItem(this.STORAGE_KEY, JSON.stringify({
+                history: this.history,
+                currentIndex: this.currentIndex
+            }));
+        } catch (e) {
+            console.warn('Failed to save history to localStorage:', e);
+        }
+    },
+
+    loadFromStorage() {
+        try {
+            const data = localStorage.getItem(this.STORAGE_KEY);
+            if (data) {
+                const parsed = JSON.parse(data);
+                this.history = parsed.history || [];
+                this.currentIndex = Math.min(parsed.currentIndex || -1, this.history.length - 1);
+            }
+        } catch (e) {
+            console.warn('Failed to load history from localStorage:', e);
+        }
+    },
+
+    clear() {
+        this.history = [];
+        this.currentIndex = -1;
+        localStorage.removeItem(this.STORAGE_KEY);
+        this.updateUI();
+    },
+
+    updateUI() {
+        document.getElementById('undoBtn').disabled = !this.canUndo();
+        document.getElementById('redoBtn').disabled = !this.canRedo();
+        
+        const badge = document.getElementById('historyBadge');
+        const count = this.history.length;
+        badge.textContent = count;
+        badge.style.display = count > 0 ? 'flex' : 'none';
+
+        this.renderHistoryList();
+    },
+
+    renderHistoryList() {
+        const list = document.getElementById('historyList');
+        list.innerHTML = '';
+
+        if (this.history.length === 0) {
+            list.innerHTML = '<p style="text-align:center; padding: 30px; color: var(--text-sub); font-size: 13px;">暂无历史记录</p>';
+            return;
+        }
+
+        for (let i = this.history.length - 1; i >= 0; i--) {
+            const state = this.history[i];
+            const isActive = i === this.currentIndex;
+            const item = document.createElement('div');
+            item.className = 'history-item' + (isActive ? ' active' : '');
+            item.onclick = () => this.restoreAndNotify(i);
+
+            const thumbSrc = state.items.length > 0 ? 
+                (state.items[0].processedDataUrl || state.items[0].originalDataUrl) : '';
+            
+            const timeStr = new Date(state.timestamp).toLocaleTimeString('zh-CN', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            });
+
+            item.innerHTML = `
+                <div class="history-thumb">
+                    ${thumbSrc ? `<img src="${thumbSrc}" alt="">` : ''}
+                </div>
+                <div class="history-info">
+                    <div class="name">${state.description} (${state.items.length}张图)</div>
+                    <div class="time">${timeStr} ${isActive ? '• 当前' : ''}</div>
+                </div>
+            `;
+            list.appendChild(item);
+        }
+    }
+};
+
 /**
  * --- 核心逻辑 ---
  */
@@ -386,6 +725,9 @@ const Core = {
             Store.items.push(item);
             UI.renderCard(item);
         }
+        if (files.length > 0) {
+            HistoryManager.saveState(Store.items, `上传${files.length}张图片`);
+        }
     },
 
     async processAll() {
@@ -396,10 +738,14 @@ const Core = {
             const item = queue[i];
             item.processed = await RepairEngine.repair(item.original, item.rect);
             item.status = 'done';
+            const canvas = document.getElementById(`canvas-${item.id}`);
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(item.processed, 0, 0);
             UI.updateCard(item);
             UI.progress(((i+1)/queue.length) * 100);
         }
         UI.progress(100, false);
+        HistoryManager.saveState(Store.items, `处理${queue.length}张图片`);
         UI.toast("处理完成");
     },
 
@@ -439,6 +785,17 @@ const UI = {
         deepBlue: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`
     },
 
+    toggleHistory() {
+        const panel = document.getElementById('historyPanel');
+        panel.classList.toggle('show');
+    },
+
+    reRenderAll() {
+        const gallery = document.getElementById('gallery');
+        gallery.innerHTML = '';
+        Store.items.forEach(item => this.renderCard(item));
+    },
+
     initTheme() {
         this.updateThemeUI('macaron');
         document.querySelectorAll('.color-dot').forEach(dot => {
@@ -471,23 +828,37 @@ const UI = {
         gallery.prepend(card);
         const canvas = document.getElementById(`canvas-${item.id}`);
         canvas.width = item.original.width; canvas.height = item.original.height;
-        new WatermarkAnnotator(canvas, item.original, (rect) => {
-            item.rect = rect;
-            item.status = 'annotated';
-            this.updateCard(item);
-        });
+        
+        if (item.status === 'done' && item.processed) {
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(item.processed, 0, 0);
+        } else {
+            const annotator = new WatermarkAnnotator(canvas, item.original, (rect) => {
+                item.rect = rect;
+                item.status = 'annotated';
+                this.updateCard(item);
+                HistoryManager.saveState(Store.items, `标注 ${item.file.name}`);
+            });
+            if (item.rect) {
+                annotator.rect = item.rect;
+                annotator.render();
+            }
+        }
+        
+        this.updateCard(item);
     },
 
     updateCard(item) {
         const badge = document.getElementById(`badge-${item.id}`);
-        if (item.status === 'annotated') {
+        if (item.status === 'pending') {
+            badge.innerText = "待标注";
+            badge.className = "status-badge";
+        } else if (item.status === 'annotated') {
             badge.innerText = "已标注";
             badge.className = "status-badge status-annotated";
         } else if (item.status === 'done') {
             badge.innerText = "完成";
             badge.className = "status-badge status-done";
-            const ctx = document.getElementById(`canvas-${item.id}`).getContext('2d');
-            ctx.drawImage(item.processed, 0, 0);
         }
     },
 
@@ -522,7 +893,21 @@ const dz = document.getElementById('dropzone');
 dz.ondragover = (e) => { e.preventDefault(); dz.style.borderColor = 'var(--accent)'; };
 dz.ondrop = (e) => { e.preventDefault(); Core.handleUpload(e.dataTransfer.files); };
 
+// 键盘快捷键
+document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z') {
+            e.preventDefault();
+            HistoryManager.undo();
+        } else if (e.key === 'y') {
+            e.preventDefault();
+            HistoryManager.redo();
+        }
+    }
+});
+
 UI.initTheme();
+HistoryManager.init();
 </script>
 </body>
 </html>
